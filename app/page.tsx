@@ -21,12 +21,30 @@ type HeroBook = {
   price: number;
 };
 
-// --- PARTICLE COMPONENT (Subtle Dust) ---
-const FloatingParticles = () => {
-  // 1. Start with empty state (matches server)
-  const [particles, setParticles] = useState<any[]>([]);
+type Particle = {
+  id: number;
+  size: number;
+  x: number;
+  y: number;
+  duration: number;
+};
 
-  // 2. Generate random numbers ONLY on the client
+// --- FALLBACK DATA (Graceful Degradation) ---
+const FALLBACK_BOOK: HeroBook = {
+  id: "archive-exclusive-01",
+  title: "The Principles of Minimalist Design",
+  author: "Archive Editorial",
+  description:
+    "An exploration into the aesthetics of modern digital curation. This exclusive volume captures the essence of white space, typography, and structural layout.",
+  coverUrl:
+    "https://via.placeholder.com/400x600/e8e6e1/1a1a1a?text=Archive+Design",
+  price: 45.0,
+};
+
+// --- PARTICLE COMPONENT ---
+const FloatingParticles = () => {
+  const [particles, setParticles] = useState<Particle[]>([]);
+
   useEffect(() => {
     const generatedParticles = [...Array(8)].map((_, i) => ({
       id: i,
@@ -72,26 +90,33 @@ export default function Home() {
   const [book, setBook] = useState<HeroBook | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Scroll Parallax for Marquee (Only reacts to scrolling, not mouse)
   const { scrollYProgress } = useScroll();
   const marqueeX = useTransform(scrollYProgress, [0, 1], [0, -200]);
 
   // --- FETCH HERO BOOK ---
   useEffect(() => {
     const fetchHeroBook = async () => {
+      setLoading(true);
       try {
-        // Fetch "Design" books
-        const response = await fetch(
-          "https://www.googleapis.com/books/v1/volumes?q=subject:design&orderBy=newest&langRestrict=en&maxResults=5"
-        );
+        // 1. INJECT API KEY
+        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_BOOKS_API_KEY || "";
+        const keyParam = apiKey ? `&key=${apiKey}` : "";
+        const endpoint = `https://www.googleapis.com/books/v1/volumes?q=subject:design&orderBy=newest&langRestrict=en&maxResults=5${keyParam}`;
+
+        const response = await fetch(endpoint);
         const data = await response.json();
 
-        const validBook = data.items?.find(
+        // 2. ERROR HANDLING
+        if (data.error) throw new Error(data.error.message);
+        if (!data.items) throw new Error("No items returned");
+
+        const validBook = data.items.find(
           (item: any) =>
-            item.volumeInfo.imageLinks?.thumbnail && item.volumeInfo.description
+            item.volumeInfo?.imageLinks?.thumbnail &&
+            item.volumeInfo?.description,
         );
 
-        if (!validBook) return;
+        if (!validBook) throw new Error("No valid book with cover found");
 
         const info = validBook.volumeInfo;
         const rawImage = info.imageLinks.thumbnail;
@@ -110,11 +135,17 @@ export default function Home() {
           price: parseFloat((25 + (info.title.length % 15)).toFixed(2)),
         });
       } catch (error) {
-        console.error(error);
+        console.error(
+          "🚨 [SYSTEM] Hero Fetch Failed. Loading Fallback.",
+          error,
+        );
+        // 3. GRACEFUL DEGRADATION: Load fallback book instead of crashing
+        setBook(FALLBACK_BOOK);
       } finally {
         setLoading(false);
       }
     };
+
     fetchHeroBook();
   }, []);
 
@@ -147,19 +178,16 @@ export default function Home() {
     <main className="min-h-screen w-full bg-paper flex flex-col overflow-x-hidden relative">
       {/* --- HERO SECTION --- */}
       <section className="relative w-full lg:h-screen flex flex-col lg:flex-row">
-        {/* PARTICLES (Subtle Background movement) */}
         <FloatingParticles />
 
         {/* LOADING STATE */}
-        {loading || !book ? (
+        {loading ? (
           <div className="w-full h-screen flex items-center justify-center">
-            <div className="animate-pulse flex flex-col items-center gap-4">
-              <div className="h-[400px] w-[280px] bg-gray-200 rounded-sm shadow-xl"></div>
-            </div>
+            <div className="w-8 h-8 border-4 border-ink border-t-transparent rounded-full animate-spin"></div>
           </div>
-        ) : (
+        ) : book ? (
           <>
-            {/* LEFT SIDE: TEXT (Stable) */}
+            {/* LEFT SIDE: TEXT */}
             <div className="w-full lg:w-1/2 p-12 lg:p-24 flex flex-col justify-center z-10 pt-32 lg:pt-0">
               <motion.div
                 initial={{ opacity: 0, y: 40 }}
@@ -207,22 +235,20 @@ export default function Home() {
               </motion.div>
             </div>
 
-            {/* RIGHT SIDE: IMAGE (Breathing, not Wobbly) */}
+            {/* RIGHT SIDE: IMAGE */}
             <div className="w-full lg:w-1/2 relative h-[60vh] lg:h-auto bg-[#e8e6e1] overflow-hidden flex items-center justify-center">
-              {/* KINETIC BACKGROUND TEXT */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[200%] -rotate-45 opacity-[0.04] pointer-events-none select-none z-0">
                 <motion.div
-                  style={{ x: marqueeX }} // Scroll Parallax
+                  style={{ x: marqueeX }}
                   className="font-sans font-black text-[150px] leading-none whitespace-nowrap text-ink"
                 >
                   ARCHIVE • DESIGN • CULTURE • ARCHIVE • DESIGN • CULTURE •
                 </motion.div>
               </div>
 
-              {/* HERO IMAGE */}
               <motion.div
                 initial={{ scale: 1.1, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1, y: [0, -15, 0] }} // Gentle Breathing Float
+                animate={{ scale: 1, opacity: 1, y: [0, -15, 0] }}
                 transition={{
                   scale: { duration: 1.2 },
                   y: { repeat: Infinity, duration: 6, ease: "easeInOut" },
@@ -236,20 +262,15 @@ export default function Home() {
                   className="object-cover rounded-sm"
                   priority
                 />
-                {/* Realistic Gloss Reflection */}
                 <div className="absolute inset-0 bg-gradient-to-tr from-black/20 via-transparent to-white/10 pointer-events-none rounded-sm" />
               </motion.div>
             </div>
           </>
-        )}
+        ) : null}
       </section>
 
-      {/* --- CONTENT FLOW --- */}
-
-      {/* 1. SCROLLING MANIFESTO */}
       <Manifesto />
 
-      {/* 2. CLEVERTAP NATIVE SLOT (Dark Mode) */}
       <div
         id="ct-exclusive-drop-slot"
         className="w-full relative z-30 bg-[#1a1a1a]"
@@ -257,7 +278,6 @@ export default function Home() {
         <NativeSpotlight />
       </div>
 
-      {/* 3. MEGA FOOTER */}
       <Footer />
     </main>
   );

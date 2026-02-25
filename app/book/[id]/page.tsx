@@ -26,52 +26,94 @@ const REVIEWS = [
   },
 ];
 
+// --- STRICT TYPES ---
+type BookDetails = {
+  id: string;
+  title: string;
+  author: string;
+  description: string;
+  coverUrl: string;
+  price: number;
+};
+
 export default function BookDetailsPage() {
-  const { id } = useParams();
-  const [book, setBook] = useState<any>(null);
+  const params = useParams();
+  const id = params?.id as string;
+  const router = useRouter();
+
+  const [book, setBook] = useState<BookDetails | null>(null);
   const [loading, setLoading] = useState(true);
-  const { addToCart } = useAuthStore();
+  const [error, setError] = useState<string | null>(null);
+
+  const { addToCart, showToast } = useAuthStore();
 
   useEffect(() => {
     const fetchDetails = async () => {
+      if (!id) return;
+      setLoading(true);
+      setError(null);
+
       try {
-        // GOOGLE BOOKS ID LOOKUP
-        const response = await fetch(
-          `https://www.googleapis.com/books/v1/volumes/${id}`
-        );
+        // 1. INJECT API KEY (Prevents 429 Quota Exceeded)
+        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_BOOKS_API_KEY || "";
+        const keyParam = apiKey ? `?key=${apiKey}` : "";
+        const endpoint = `https://www.googleapis.com/books/v1/volumes/${id}${keyParam}`;
+
+        const response = await fetch(endpoint);
         const data = await response.json();
+
+        // 2. DEFENSIVE CHECK: API Errors
+        if (data.error) {
+          throw new Error(
+            data.error.message || "Google Books API Quota Exceeded",
+          );
+        }
+
+        // 3. DEFENSIVE CHECK: Malformed Data
+        if (!data || !data.volumeInfo) {
+          throw new Error("Book data not found or malformed in the Archive.");
+        }
+
         const info = data.volumeInfo;
 
-        // Image Quality Hack
-        let img = info.imageLinks?.thumbnail || "";
-        if (img)
-          img = img.replace("http:", "https:").replace("&zoom=1", "&zoom=0");
+        // 4. SAFE IMAGE EXTRACTION (Prevents TypeError: Cannot read 'thumbnail')
+        const rawImg =
+          info.imageLinks?.extraLarge ||
+          info.imageLinks?.large ||
+          info.imageLinks?.thumbnail ||
+          info.imageLinks?.smallThumbnail;
 
-        // Clean HTML Description
+        const finalImg = rawImg
+          ? rawImg.replace("http:", "https:").replace("&zoom=1", "&zoom=0")
+          : "https://via.placeholder.com/400x600?text=No+Cover+Available"; // Fallback Image
+
+        // 5. CLEAN HTML SAFELY
         const desc = info.description
           ? info.description.replace(/<\/?[^>]+(>|$)/g, "")
           : "No description available for this masterpiece.";
 
         setBook({
           id: data.id,
-          title: info.title,
-          author: info.authors?.[0] || "Unknown",
+          title: info.title || "Unknown Title",
+          author: info.authors?.[0] || "Unknown Author",
           description: desc,
-          coverUrl: img,
-          // Consistent Price Generation
-          price: parseFloat((25 + (info.title.length % 40)).toFixed(2)),
+          coverUrl: finalImg,
+          price: parseFloat((25 + ((info.title?.length || 0) % 40)).toFixed(2)),
         });
-      } catch (e) {
-        console.error(e);
+      } catch (e: any) {
+        console.error("🚨 [SYSTEM] Fetch Details Error:", e.message);
+        setError(e.message);
       } finally {
         setLoading(false);
       }
     };
 
-    if (id) fetchDetails();
+    fetchDetails();
   }, [id]);
 
-  const handleAddToCart = () => {
+  const handleAddToCart = async () => {
+    if (!book) return;
+
     addToCart({
       id: book.id,
       title: book.title,
@@ -80,25 +122,47 @@ export default function BookDetailsPage() {
       quantity: 1,
     });
 
-    // Analytics
+    if (showToast) showToast("Added to Cart");
+
+    // Analytics (Modernized Async/Await)
     if (typeof window !== "undefined") {
-      import("clevertap-web-sdk").then((ct) => {
-        const clevertap = ct.default || ct;
-        clevertap.event.push("Added to Cart", {
-          "Product Name": book.title,
-          Source: "Details Page",
-        });
+      const ctModule = await import("clevertap-web-sdk");
+      const clevertap = ctModule.default || ctModule;
+      clevertap.event.push("Added to Cart", {
+        "Product Name": book.title,
+        Source: "Details Page",
       });
     }
   };
 
-  if (loading || !book)
+  // --- RENDER STATES ---
+  if (loading) {
     return (
-      <div className="min-h-screen bg-paper flex items-center justify-center font-serif text-ink animate-pulse">
+      <div className="min-h-screen bg-paper flex items-center justify-center font-serif text-ink animate-pulse text-2xl">
         Fetching from Archive...
       </div>
     );
+  }
 
+  // Graceful Degradation: Show an error state instead of a white screen crash
+  if (error || !book) {
+    return (
+      <div className="min-h-screen bg-paper flex flex-col items-center justify-center font-serif text-ink p-8 text-center">
+        <h2 className="text-4xl mb-4">Volume Unavailable</h2>
+        <p className="font-sans text-xs uppercase tracking-widest text-red-500 mb-8">
+          {error}
+        </p>
+        <button
+          onClick={() => router.back()}
+          className="border-b border-ink pb-1 hover:text-[#9F8155] transition-colors"
+        >
+          Return to Previous Page
+        </button>
+      </div>
+    );
+  }
+
+  // --- MAIN RENDER ---
   return (
     <main className="min-h-screen bg-paper text-ink p-6 lg:p-12 flex flex-col lg:flex-row gap-12 relative">
       {/* LEFT: IMAGE (Sticky & Large) */}
@@ -117,6 +181,7 @@ export default function BookDetailsPage() {
             alt={book.title}
             fill
             className="object-cover rounded-sm shadow-xl"
+            priority // Eager load the main product image
           />
 
           {/* Reflection */}
@@ -131,7 +196,7 @@ export default function BookDetailsPage() {
           initial={{ y: 20, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
         >
-          <span className="font-sans text-xs uppercase tracking-[0.2em] text-gold font-bold">
+          <span className="font-sans text-xs uppercase tracking-[0.2em] text-[#9F8155] font-bold">
             Detailed View
           </span>
           <h1 className="font-serif text-5xl lg:text-7xl leading-[0.9] mt-4 mb-2 text-ink">
@@ -149,7 +214,7 @@ export default function BookDetailsPage() {
           </span>
           <button
             onClick={handleAddToCart}
-            className="bg-ink text-white px-12 py-5 font-sans text-xs uppercase tracking-widest hover:bg-gold transition-colors shadow-lg"
+            className="bg-ink text-paper px-12 py-5 font-sans text-xs uppercase tracking-widest hover:bg-[#9F8155] transition-colors shadow-lg"
           >
             Add to Cart
           </button>
@@ -183,7 +248,7 @@ export default function BookDetailsPage() {
                   <span className="font-bold font-sans text-xs uppercase tracking-widest text-ink">
                     {review.user}
                   </span>
-                  <span className="text-gold text-xs">
+                  <span className="text-[#9F8155] text-xs">
                     {"★".repeat(review.rating)}
                   </span>
                 </div>

@@ -76,9 +76,10 @@ const BookCard = ({
           src={book.coverUrl}
           alt={book.title}
           fill
+          priority={index < 4} // Eager load first 4 images to fix LCP warning
           sizes="(max-width: 768px) 50vw, 20vw"
           className="object-cover transition-transform duration-700 group-hover:scale-105"
-          onError={() => setImageError(true)} // 👈 THE FIX: Hide if broken
+          onError={() => setImageError(true)} // Hide if broken
         />
         <div className="absolute inset-0 bg-ink/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
 
@@ -138,12 +139,48 @@ export default function ShopPage() {
   useEffect(() => {
     const fetchBooks = async () => {
       setLoading(true);
+
+      // 1. CHECK CACHE FIRST
+      const cacheKey = `archive_books_${activeCategory}`;
+      const cachedData = sessionStorage.getItem(cacheKey);
+
+      if (cachedData) {
+        setBooks(JSON.parse(cachedData));
+        setLoading(false);
+
+        // Track Event even if cached
+        if (typeof window !== "undefined") {
+          const ctModule = await import("clevertap-web-sdk");
+          const ct = ctModule.default || ctModule;
+          ct.event.push("Category Viewed", {
+            "Category Name": activeCategory,
+            User: user?.email || "Guest",
+          });
+        }
+        return; // Stop execution here if cached
+      }
+
+      // 2. FETCH FROM API IF NOT CACHED
       try {
         const query = CATEGORIES[activeCategory];
-        const endpoint = `https://www.googleapis.com/books/v1/volumes?q=${query}&orderBy=newest&maxResults=40&langRestrict=en&printType=books`;
+        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_BOOKS_API_KEY || "";
+        const keyParam = apiKey ? `&key=${apiKey}` : "";
+        const endpoint = `https://www.googleapis.com/books/v1/volumes?q=${query}&orderBy=newest&maxResults=40&langRestrict=en&printType=books${keyParam}`;
 
+        // 👇 ADD THIS DEBUG LINE
+        console.log(
+          "🔑 API Key Check:",
+          apiKey ? "Loaded!" : "MISSING! Reading as undefined",
+        );
         const response = await fetch(endpoint);
         const data = await response.json();
+
+        // Handle Quota/Rate Limit Errors Gracefully
+        if (data.error) {
+          console.error("API Error:", data.error.message);
+          setLoading(false);
+          return;
+        }
 
         if (!data.items) {
           setBooks([]);
@@ -155,12 +192,12 @@ export default function ShopPage() {
           .map((item: any) => {
             const info = item.volumeInfo;
 
-            // 1. STRICT API FILTER
+            // STRICT API FILTER
             const rawImg =
               info.imageLinks?.thumbnail || info.imageLinks?.smallThumbnail;
             if (!rawImg) return null;
 
-            // 2. High Res Hack
+            // High Res Hack
             const img = rawImg
               .replace("http:", "https:")
               .replace("&zoom=1", "&zoom=0");
@@ -176,12 +213,16 @@ export default function ShopPage() {
           .filter((b: any) => b !== null)
           .filter((b: Book) => !b.title.toLowerCase().includes("summary"));
 
-        // 3. Remove Duplicates
+        // Remove Duplicates
         const uniqueBooks = Array.from(
-          new Map(processedBooks.map((item: Book) => [item.id, item])).values()
+          new Map(processedBooks.map((item: Book) => [item.id, item])).values(),
         ) as Book[];
 
-        setBooks(shuffleArray(uniqueBooks).slice(0, 15));
+        const finalBooks = shuffleArray(uniqueBooks).slice(0, 15);
+
+        // 3. SAVE TO CACHE FOR NEXT TIME
+        sessionStorage.setItem(cacheKey, JSON.stringify(finalBooks));
+        setBooks(finalBooks);
 
         // Analytics
         if (typeof window !== "undefined") {
@@ -193,7 +234,7 @@ export default function ShopPage() {
           });
         }
       } catch (error) {
-        console.error("API Error:", error);
+        console.error("Fetch failed:", error);
       } finally {
         setLoading(false);
       }
